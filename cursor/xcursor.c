@@ -24,6 +24,8 @@
  */
 
 #include "xcursor.h"
+
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -608,6 +610,14 @@ XcursorFileLoadImages (FILE *file, int size)
     return XcursorXcFileLoadImages (&f, size);
 }
 
+#ifndef USER_DATA_DIR
+#define USER_DATA_DIR ".local/share/"
+#endif
+
+#ifndef ICON_SUBDIR
+#define ICON_SUBDIR "icons/"
+#endif
+
 /*
  * From libXcursor/src/library.c
  */
@@ -617,22 +627,8 @@ XcursorFileLoadImages (FILE *file, int size)
 #endif
 
 #ifndef XCURSORPATH
-#define XCURSORPATH "~/.icons:/usr/share/icons:/usr/share/pixmaps:~/.cursors:/usr/share/cursors/xorg-x11:"ICONDIR
+#define XCURSORPATH "~/.icons/:/usr/share/pixmaps/:~/.cursors/:/usr/share/cursors/xorg-x11/:"ICONDIR
 #endif
-
-static const char *
-XcursorLibraryPath (void)
-{
-    static const char	*path;
-
-    if (!path)
-    {
-	path = getenv ("XCURSOR_PATH");
-	if (!path)
-	    path = XCURSORPATH;
-    }
-    return path;
-}
 
 static  void
 _XcursorAddPathElt (char *path, const char *elt, int len)
@@ -655,6 +651,120 @@ _XcursorAddPathElt (char *path, const char *elt, int len)
     }
     strncpy (path + pathlen, elt, len);
     path[pathlen + len] = '\0';
+}
+
+static const char *
+_XcursorNextPath (const char *path)
+{
+    char    *colon = strchr (path, ':');
+
+    if (!colon)
+	return NULL;
+    return colon + 1;
+}
+
+static const char *
+_XcursorDataDirs (void)
+{
+    static char	        *data_dirs = NULL;
+    const char          *xdg_data_home = NULL;
+    const char          *xdg_data_dirs = NULL;
+    char                *user_data_dir = NULL;
+    int                 user_data_dir_len;
+
+    if (data_dirs)
+        return data_dirs;
+
+    xdg_data_home = getenv ("XDG_DATA_HOME");
+    if (!xdg_data_home || !xdg_data_home[0])
+        xdg_data_home = "~/";
+
+    xdg_data_dirs = getenv ("XDG_DATA_DIRS");
+    if (!xdg_data_dirs || !xdg_data_dirs[0])
+        xdg_data_dirs = "/usr/local/share/:/usr/share/";
+
+    /* home dir + / + .local/share/ + NULL */
+    user_data_dir_len = strlen (xdg_data_home) + 1 + strlen (USER_DATA_DIR) + 1;
+    user_data_dir = malloc (user_data_dir_len);
+    if (!user_data_dir)
+        return NULL;
+
+    strcpy (user_data_dir, xdg_data_home);
+    _XcursorAddPathElt (user_data_dir, USER_DATA_DIR, strlen (USER_DATA_DIR));
+
+    data_dirs = NULL;
+    asprintf (&data_dirs, "%s:%s", user_data_dir, xdg_data_dirs);
+    free (user_data_dir);
+
+    return data_dirs;
+}
+
+static const char *
+XcursorLibraryPath (void)
+{
+    static char *path = NULL;
+    const char *dir;
+    const char *colon;
+    char *tmp;
+    char *oldpath;
+    int dirlen;
+    int len;
+
+    if (path)
+        return path;
+
+    path = getenv ("XCURSOR_PATH");
+    if (path)
+        return path;
+
+    for (dir = _XcursorDataDirs ();
+	 dir;
+	 dir = _XcursorNextPath (dir))
+    {
+        colon = strchr (dir, ':');
+        if (!colon)
+	    colon = dir + strlen (dir);
+
+        dirlen = colon - dir;
+
+        len = dirlen + 1 + strlen (ICON_SUBDIR) + 1;
+        tmp = malloc (len);
+        if (!tmp)
+        {
+            free (path);
+            path = NULL;
+            return NULL;
+        }
+
+        strncpy (tmp, dir, dirlen);
+        tmp[dirlen] = '\0';
+        _XcursorAddPathElt (tmp, ICON_SUBDIR, strlen (ICON_SUBDIR));
+
+        if (!path)
+        {
+            path = tmp;
+            continue;
+        }
+
+        oldpath = path;
+        path = NULL;
+        asprintf (&path, "%s:%s", oldpath, tmp);
+        if (!path)
+        {
+            free (tmp);
+            return NULL;
+        }
+
+        free (tmp);
+        free (oldpath);
+    }
+
+    oldpath = path;
+    path = NULL;
+    asprintf (&path, "%s:%s", oldpath, XCURSORPATH);
+    free (oldpath);
+
+    return path;
 }
 
 static char *
@@ -730,16 +840,6 @@ _XcursorBuildFullname (const char *dir, const char *subdir, const char *file)
     _XcursorAddPathElt (full, subdir, -1);
     _XcursorAddPathElt (full, file, -1);
     return full;
-}
-
-static const char *
-_XcursorNextPath (const char *path)
-{
-    char    *colon = strchr (path, ':');
-
-    if (!colon)
-	return NULL;
-    return colon + 1;
 }
 
 #define XcursorWhite(c)	((c) == ' ' || (c) == '\t' || (c) == '\n')
